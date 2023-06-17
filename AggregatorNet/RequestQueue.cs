@@ -23,6 +23,7 @@ namespace AggregatorNet
 
         string token;
 
+        HttpClientHandler httpHandler;
         HttpClient httpClient;
         AuthenticationHeaderValue authHeader = null;
         ConcurrentQueue<HttpRequestMessage> requests;
@@ -35,8 +36,9 @@ namespace AggregatorNet
             this.baseUri = base_uri;
             this.user = user;
             this.pass = pass;
-            ServicePointManager.ServerCertificateValidationCallback += ValidateRemoteCertificate;
-            httpClient = new HttpClient();
+            httpHandler = new HttpClientHandler();
+            httpHandler.ServerCertificateCustomValidationCallback += ValidateRemoteCertificate;
+            httpClient = new HttpClient(httpHandler);
             requests = new ConcurrentQueue<HttpRequestMessage>();
             workerThread = new Thread(RequestWorker);
             Reauthenticate();
