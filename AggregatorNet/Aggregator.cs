@@ -16,227 +16,105 @@ namespace AggregatorNet
     public class Aggregator
     {
         string baseUri;
-        string user;
-        string pass;
-
-        string token;
+        RequestQueue requestQueue;
+        Dictionary<string, PropertyKind> propertyKinds = new Dictionary<string, PropertyKind>();
         public Aggregator(string base_uri, string user, string pass)
         {
             this.baseUri = base_uri;
-            this.user = user;
-            this.pass = pass;
-            ServicePointManager.ServerCertificateValidationCallback += ValidateRemoteCertificate;
-
-        }
-        private static bool ValidateRemoteCertificate(object sender, X509Certificate cert, X509Chain chain, SslPolicyErrors error)
-        {
-            if (error == System.Net.Security.SslPolicyErrors.None)
-            {
-                return true;
-            }
-
-            return true;
-        }
-        public JsonDocument PostRequest(string endpoint, string json, string user=null, string pass=null)
-        {
-            HttpClient client = new HttpClient();
-            HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Post, this.baseUri+endpoint);
-            if (user == null && pass == null)
-                request.Headers.Add("Authorization", "Bearer " + token);
-            else
-                request.Headers.Add("Authorization", "Basic " + System.Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(user + ":" + pass)));
-            request.Content = new ByteArrayContent(System.Text.Encoding.UTF8.GetBytes(json));
-            request.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
-            var resp = client.SendAsync(request);
-            resp.Wait();
-            var data = resp.Result.Content.ReadAsStringAsync();
-            data.Wait(); 
-            var content = data.Result;
-            return JsonSerializer.Deserialize<JsonDocument>(content);
+            requestQueue = new RequestQueue(base_uri, user, pass);
         }
 
-        private void Reauthenticate()
+        public JsonDocument PostRequest(string endpoint, APIObject obj, string user = null, string pass = null)
         {
-            Console.WriteLine("Authenticating");
-            var response = this.PostRequest("/api/auth/tokens", "{}", this.user, this.pass);
-            try
-            {
-                var error = response.RootElement.GetProperty("error");
-                if (error.ValueKind != JsonValueKind.Null)
-                {
-                    Console.WriteLine("Couldn't authenticate");
-                    Console.WriteLine(error.GetString());
-                    return;
-                }
-            }
-            catch(Exception)
-            { }
-            var token = response.RootElement.GetProperty("token");
-            if(token.ValueKind == JsonValueKind.Null)
-            {
-                Console.WriteLine("No token");
-            }
-            else
-            {
-                this.token = token.GetString();
-            }
+            return requestQueue.PostRequest(endpoint, obj, user, pass);
+        }
+        public JsonDocument PostRequestRaw(string endpoint, string json, string user=null, string pass=null)
+        {
+            return requestQueue.PostRequestRaw(endpoint, json, user, pass);
+        }
+
+        public void QueueRequest(string endpoint, APIObject obj, string user = null, string pass = null)
+        {
+            //We can enqueue requests that depend on other requests being processed first,
+            //because the single worker thread guarantees in order execution of the queue
+            requestQueue.EnqueueRequest(endpoint, obj, user, pass);
+        }
+
+        public void QueueRequestRaw(string endpoint, string json, string user= null, string pass = null)
+        {
+            //We can enqueue requests that depend on other requests being processed first,
+            //because the single worker thread guarantees in order execution of the queue
+            requestQueue.EnqueueRequestRaw(endpoint, json, user, pass);
+        }
+        /// <summary>
+        /// You MUST call this to cause the worker thread to terminate after finishing all requests.
+        /// .NET does not guarantee that finalizers are called on process exit anymore, so this can't
+        /// be handled by declaring a finalizer on the Aggregator class
+        /// </summary>
+        public void FinishQueue()
+        {
+            requestQueue.FinishQueue();
         }
 
         public Scan StartScan(Tool tool, string soft_hash, string hard_hash, string arguments)
         {
-            if (this.token == null)
-                this.Reauthenticate();
-            Scan scan = new Scan();
+            Scan scan = new Scan(this);
             scan.arguments = arguments;
             scan.tool_hash = tool.hard_match_hash;
             scan.scan_hash = hard_hash;
             scan.scan_soft_hash = soft_hash;
-            var response = this.PostRequest("/api/scan/start", JsonSerializer.Serialize<Scan>(scan));
-
-            try
-            {
-                var error = response.RootElement.GetProperty("error");
-                if (error.ValueKind != JsonValueKind.Null)
-                {
-                    Console.WriteLine("Couldn't start scan. Error:");
-                    Console.WriteLine(error.GetString());
-                    return null;
-                }
-            }
-            catch (Exception)
-            { }
+            this.QueueRequest("/api/scan/start", scan);
 
             return scan;
         }
 
-        private bool CheckErrorAndReauthenticate(JsonDocument response)
-        {
-            try
-            {
-                var error = response.RootElement.GetProperty("error");
-                if (error.ValueKind == JsonValueKind.String)
-                {
-                    if (error.GetString() == "401")
-                    {
-                        this.Reauthenticate();
-                        return false;
-                    }
-                    else
-                        return true;
-                }
-            }
-            catch (Exception) { }
-            return true;
-        }
-
         public void StopScan(Scan scan)
         {
-            for (int x = 0; x < 2; x++)
-            {
-                var response = this.PostRequest("/api/scan/stop", JsonSerializer.Serialize<Scan>(scan));
-
-                try
-                {
-                    if (!CheckErrorAndReauthenticate(response))
-                        continue;
-                    var error = response.RootElement.GetProperty("error");
-                    
-                    if (error.ValueKind != JsonValueKind.Null)
-                    {
-                        Console.WriteLine("Couldn't stop scan. Error:");
-                        Console.WriteLine(error.GetString());
-                    }
-                    return;
-                }
-                catch (Exception)
-                { }
-            }
+            this.QueueRequestRaw("/api/scan/stop", scan.toJson());
         }
 
-        public Subject CreateSubject(string name, string path, string soft_hash, string hard_hash, string version = "1.0", string host=null)
+        public PropertyKind CreatePropertyKind(string name, string description, bool is_matching=false)
+        {
+            if(propertyKinds.ContainsKey(name))
+                return propertyKinds[name];
+            PropertyKind kind = new PropertyKind(this, name, description, is_matching);
+            propertyKinds.Add(name, kind);
+            return kind;
+        }
+
+        public PropertyKind GetPropertyKind(string name)
+        {
+            if (propertyKinds.ContainsKey(name))
+                return propertyKinds[name];
+            return null;
+        }
+
+        public Subject CreateSubject(string name, string hard_hash, List<Property> properties, string version = "1.0", string host=null)
         {
             if (host == null)
                 host = Environment.MachineName;
-            Subject subj = new Subject();
+            Subject subj = new Subject(this);
             subj.hash = hard_hash;
-            subj.host = host;
-            subj.version = version;
             subj.name = name;
-            subj.soft_hash = soft_hash;
-            subj.path = path;
+            subj.SetProperties(properties);
+            this.QueueRequest("/api/subject/create", subj);
 
-            for (int x = 0; x < 2; x++)
-            {
-                var response = this.PostRequest("/api/subject/create", JsonSerializer.Serialize<Subject>(subj));
-
-                try
-                {
-                    if (!CheckErrorAndReauthenticate(response))
-                        continue;
-                    var error = response.RootElement.GetProperty("error");
-                    if (error.ValueKind != JsonValueKind.Null)
-                    {
-                        Console.WriteLine("Couldn't create subject. Error:");
-                        Console.WriteLine(error.GetString());
-                    }
-                }
-                catch (Exception)
-                { }
-                return subj;
-            }
             return subj;
         }
 
-        public void SubmitResult(Scan scan, Subject subj, Result result)
+        public void SubmitResult(Result result)
         {
-            result.scan_hash = scan.scan_hash;
-            result.subject_hash = subj.hash;
-
-            for (int x = 0; x < 2; x++)
-            {
-                var response = this.PostRequest("/api/scan/submit", JsonSerializer.Serialize<Result>(result));
-                try
-                {
-                    if (!CheckErrorAndReauthenticate(response))
-                        continue;
-                    var error = response.RootElement.GetProperty("error");
-                    if (error.ValueKind != JsonValueKind.Null)
-                    {
-                        Console.WriteLine("Couldn't submit result. Error:");
-                        Console.WriteLine(error.GetString());
-                    }
-                }
-                catch (Exception)
-                { }
-                return;
-            }
+            this.QueueRequest("/api/scan/submit", result);
         }
 
         public Tool CreateTool(string name, string description, string version="1.0")
         {
-            if (this.token == null)
-                this.Reauthenticate();
-            Tool tool = new Tool();
+            Tool tool = new Tool(this);
             tool.name = name;
             tool.description = description;
-            tool.soft_match_hash = HashHelper.GetSHA256String(tool.name);
             tool.hard_match_hash = HashHelper.GetSHA256StringFromFile(System.Reflection.Assembly.GetEntryAssembly().Location);
             tool.version = version;
-            string json = JsonSerializer.Serialize(tool);
-            var response = this.PostRequest("/api/tool/register", json);
-
-            try
-            {
-                var error = response.RootElement.GetProperty("error");
-                if (error.ValueKind != JsonValueKind.Null)
-                {
-                    Console.WriteLine("Couldn't register tool. Error:");
-                    Console.WriteLine(error.GetString());
-                    return null;
-                }
-            }
-            catch (Exception)
-            { }
+            this.QueueRequest("/api/tool/register", tool);
 
             return tool;
         }
