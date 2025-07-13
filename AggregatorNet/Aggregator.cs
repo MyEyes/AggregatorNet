@@ -107,7 +107,7 @@ namespace AggregatorNet
             this.QueueRequest("/api/scan/submit", result);
         }
 
-        public Tool CreateTool(string name, string description, string version="1.0")
+        public Tool CreateTool(string name, string description, string version = "1.0")
         {
             Tool tool = new Tool(this);
             tool.name = name;

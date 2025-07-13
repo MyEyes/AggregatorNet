@@ -209,22 +209,22 @@ namespace AggregatorNet
                 try
                 {
                     var response = ProcessRequest(requestObject);
-                    if (!CheckErrorAndReauthenticate(response)) //This only returns true if we got an error that indicates our auth token is invalid and we've reauthenticated
-                    {
-                        //At this point we should be reauthenticated, so replace old auth header
+                if (!CheckErrorAndReauthenticate(response)) //This only returns true if we got an error that indicates our auth token is invalid and we've reauthenticated
+                {
+                    //At this point we should be reauthenticated, so replace old auth header
                         var repeatedMessage = new HttpRequestMessage(HttpMethod.Post, requestObject.httpRequest.RequestUri);
-                        repeatedMessage.Headers.Authorization = this.authHeader;
+                    repeatedMessage.Headers.Authorization = this.authHeader;
                         repeatedMessage.Content = requestObject.httpRequest.Content;
                         requestObject.httpRequest = repeatedMessage;
                         response = ProcessRequest(requestObject);
-                    }
-                    JsonElement error;
-                    if (response.RootElement.TryGetProperty("error", out error))
+                }
+                JsonElement error;
+                if (response.RootElement.TryGetProperty("error", out error))
+                {
+                    if (error.ValueKind != JsonValueKind.Null)
                     {
-                        if (error.ValueKind != JsonValueKind.Null)
-                        {
-                            Console.WriteLine(error.GetString());
-                        }
+                        Console.WriteLine(error.GetString());
+                    }
                     }
                 }
                 catch (Exception e) {
